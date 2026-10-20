@@ -176,6 +176,55 @@ function pick(k,acc){pickKey=k;$("#fi").accept=acc;$("#fi").click()}
 function newP(tid){const t=tp(tid);const p={id:"p"+Date.now().toString(36),name:t.name+" video",tpl:tid,title:"Top 5 Fails Ever",slots:SAMPLE.map(s=>({name:s[0],cap:s[1],media:null})),font:t.font,color:t.color,accent:t.accent,bg:t.bg,tr:t.tr,sfx:"pop",music:null,vol:50,updated:Date.now()};P.unshift(p);save();openP(p.id)}
 function openP(id){stop();cur=P.find(p=>p.id===id);if(!cur)return;sel=0;t=0;tab="c";view="ed";app();window.scrollTo(0,0)}
 function app(){$("#app").innerHTML=view==="dash"?dash():editor();if(view==="ed"){applyStyle();setScene(0);tl()}}
+
+/* ---------- browser video renderer ---------- */
+let renderBusy=false, renderAudioSource=null, renderAudioDest=null;
+function canvasBackground(ctx,key,w,h){
+ const presets={g1:[[0,0,w,h],['#2e0f5c','#08060d']],epic:[[w*.5,0,w*.5,h*.8],['#7c3aed','#05030a']],meme:[[0,0,w,h],['#581c87','#1e1b4b']],brain:[[0,0,w,h],['#ff00c8','#5b21b6','#00b8d4']],glitch:[[0,0,w,h],['#1b0b2e','#080808']],forest:[[0,0,w,h],['#14532d','#07060b']],mystery:[[0,0,w,h],['#0e0e24','#000000']],min:[[0,0,w,h],['#0c0c0e','#0c0c0e']],sun:[[0,0,w,h],['#f97316','#be185d','#1e1b4b']],ocean:[[0,0,w,h],['#0369a1','#1e1b4b']]};
+ const a=presets[key]||presets.g1;let g=ctx.createLinearGradient(0,0,w,h);a[1].forEach((c,i)=>g.addColorStop(i/(a[1].length-1),c));ctx.fillStyle=g;ctx.fillRect(0,0,w,h);
+ if(key==='glitch'){ctx.fillStyle='#00000033';for(let y=0;y<h;y+=8)ctx.fillRect(0,y,w,3)}
+}
+function fitMedia(ctx,media,x,y,w,h){try{const mw=media.videoWidth||media.naturalWidth||media.width,mh=media.videoHeight||media.naturalHeight||media.height;if(!mw||!mh)return;const scale=Math.max(w/mw,h/mh),sw=w/scale,sh=h/scale,sx=(mw-sw)/2,sy=(mh-sh)/2;ctx.drawImage(media,sx,sy,sw,sh,x,y,w,h)}catch(e){}}
+function roundedRect(ctx,x,y,w,h,r){ctx.beginPath();ctx.roundRect?ctx.roundRect(x,y,w,h,r):(ctx.rect(x,y,w,h));ctx.fill()}
+async function renderVideo(){
+ if(renderBusy||!cur)return;renderBusy=true;stop();const project=cur,projectId=cur.id;
+ const status=()=>document.getElementById('renderStatus');
+ try{
+  if(!HTMLCanvasElement.prototype.captureStream||!window.MediaRecorder)throw new Error('This browser does not support canvas video recording. Try the latest Chrome.');
+  const canvas=document.createElement('canvas');canvas.width=720;canvas.height=1280;const ctx=canvas.getContext('2d');if(!ctx)throw new Error('Canvas is unavailable in this browser.');
+  const media=[],videos=[];
+  for(let i=0;i<5;i++){
+   const item=M[project.id+':'+i];let el=null;
+   if(item){if(item.type==='video'){el=document.createElement('video');el.src=item.url;el.muted=true;el.playsInline=true;el.preload='auto';await new Promise(resolve=>{el.onloadeddata=resolve;el.onerror=resolve;setTimeout(resolve,8000)});videos.push(el)}else{el=new Image();el.src=item.url;await new Promise(resolve=>{el.onload=resolve;el.onerror=resolve;setTimeout(resolve,8000)})}}
+   media.push(el);
+  }
+  const stream=canvas.captureStream(30);
+  const mime=['video/mp4;codecs=avc1.42E01E','video/mp4','video/webm;codecs=vp9','video/webm;codecs=vp8','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+  if(!mime)throw new Error('No supported video format was found in this browser.');
+  let audioStream=null;
+  if(M[project.id+':m']){
+   try{if(!AC)AC=new(window.AudioContext||window.webkitAudioContext)();await AC.resume();if(!renderAudioSource){renderAudioSource=AC.createMediaElementSource(MA);renderAudioDest=AC.createMediaStreamDestination();renderAudioSource.connect(AC.destination);renderAudioSource.connect(renderAudioDest)}MA.src=M[project.id+':m'].url;MA.loop=true;MA.volume=project.vol/100;await MA.play();audioStream=renderAudioDest.stream;audioStream.getAudioTracks().forEach(track=>stream.addTrack(track))}catch(e){toast('Video will render without music: '+e.message,'err')}
+  }
+  const chunks=[];const recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5000000});
+  const done=new Promise((resolve,reject)=>{recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};recorder.onerror=()=>reject(new Error('Recording failed. Try shorter/smaller clips.'));recorder.onstop=resolve});
+  let start=0,finished=false;recorder.start(250);for(const v of videos){try{v.currentTime=0;await v.play()}catch(e){}}
+  function frame(now){if(finished)return;if(!start)start=now;const elapsed=(now-start)/1000;const idx=Math.min(4,Math.floor(elapsed/3));const local=(elapsed-idx*3)/3;const slot=project.slots[idx],accent=project.accent,color=project.color;
+   canvasBackground(ctx,project.bg,canvas.width,canvas.height);
+   ctx.save();ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=color;ctx.font='800 42px '+(F[project.font]?.[0]||'Arial');ctx.shadowColor=accent;ctx.shadowBlur=8;ctx.fillText(String(project.title||'TOP 5 RANKING').toUpperCase().slice(0,36),360,100);ctx.shadowBlur=0;
+   const scale=project.tr==='zoom'?Math.min(1,0.65+local*0.5):1;ctx.translate(360,340);ctx.scale(scale,scale);ctx.fillStyle=accent;ctx.font='900 180px '+(F[project.font]?.[0]||'Arial');ctx.shadowColor=accent;ctx.shadowBlur=22;ctx.fillText('#'+(5-idx),0,0);ctx.restore();
+   const x=45,y=450,w=630,h=450;ctx.fillStyle='#ffffff18';roundedRect(ctx,x,y,w,h,28);const el=media[idx];if(el)fitMedia(ctx,el,x,y,w,h);else{ctx.fillStyle='#ffffff';ctx.font='140px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(EMO[idx],360,675)}
+   ctx.fillStyle=color;ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='900 48px '+(F[project.font]?.[0]||'Arial');ctx.shadowColor=accent;ctx.shadowBlur=8;ctx.fillText(String(slot.name||'').toUpperCase().slice(0,25),360,980);ctx.shadowBlur=0;
+   ctx.fillStyle='#0009';roundedRect(ctx,55,1050,610,100,20);ctx.fillStyle=color;ctx.font='bold 30px '+(F[project.font]?.[0]||'Arial');ctx.fillText(String(slot.cap||'').slice(0,55),360,1100);
+   ctx.fillStyle='#ffffff55';roundedRect(ctx,55,45,610,8,4);ctx.fillStyle=accent;roundedRect(ctx,55,45,610*(elapsed/15),8,4);
+   if(status())status().textContent='Rendering… '+Math.min(100,Math.floor(elapsed/15*100))+'%';
+   if(elapsed<15)requestAnimationFrame(frame);else{finished=true;MA.pause();recorder.stop()}
+  }
+  requestAnimationFrame(frame);await done;stream.getTracks().forEach(t=>t.stop());if(!chunks.length)throw new Error('The browser produced an empty video.');
+  const blob=new Blob(chunks,{type:mime});const url=URL.createObjectURL(blob);const a=document.createElement('a');const ext=mime.includes('mp4')?'mp4':'webm';a.href=url;a.download=(project.name||'ranking-video').replace(/[^a-z0-9_-]+/gi,'-')+'.'+ext;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),120000);
+  if(status())status().textContent='Finished! Your '+ext.toUpperCase()+' video download has started.';toast('Video rendered successfully ('+ext.toUpperCase()+').','ok');
+ }catch(err){if(status())status().textContent='Export failed: '+err.message;toast('Export failed: '+err.message,'err')}finally{renderBusy=false;MA.pause()}
+}
+
 const A={
 new(){modal(`<h2>Choose a template</h2><p style="color:var(--mut)">You can change everything later.</p><div class="grid" style="margin-top:14px">${TPL.map(tplCard).join("")}</div><div style="margin-top:14px"><button class="btn" data-act="close">Cancel</button></div>`,1)},
 use(id){closeM();newP(id)},open:openP,close:closeM,
@@ -192,11 +241,10 @@ rm(i){const k=cur.id+":"+i;if(M[k]){URL.revokeObjectURL(M[k].url);delete M[k]}cu
 upm(){pick("m","audio/*")},
 rmm(){const k=cur.id+":m";if(M[k]){URL.revokeObjectURL(M[k].url);delete M[k]}cur.music=null;MA.pause();touch();$("#pnl").innerHTML=panel()},
 tsfx(){if(!AC)try{AC=new(window.AudioContext||window.webkitAudioContext)()}catch(e){return toast("Audio isn’t available in this browser.","err")}AC.resume();sfx()},
-export(){const n=cur.slots.filter((s,i)=>M[cur.id+":"+i]).length;modal(`<h2>Export Video</h2><div class="set" style="margin-top:12px"><div class="chip"><small>Resolution</small>1080 × 1920</div><div class="chip"><small>Format</small>MP4 (H.264)</div><div class="chip"><small>Frame rate</small>30 FPS</div><div class="chip"><small>Aspect ratio</small>9:16 · YouTube Shorts</div></div>
-<div class="note"><b>Video rendering isn’t implemented in this prototype.</b> These settings are fixed targets for the future renderer. No MP4 will be produced by the button below. ${n}/5 slots currently have media loaded.</div>
-<p style="color:var(--mut);font-size:13px;margin:0 0 4px">To enable real export:</p><ol><li>Draw each frame to a 1080×1920 canvas at 30 FPS, reusing the preview’s scene and animation logic.</li><li>Mix music and sound effects with an offline Web Audio render.</li><li>Encode with WebCodecs, or ffmpeg.wasm for MP4/H.264. MediaRecorder alone gives WebM.</li><li>Alternative: a server-side renderer such as Remotion or FFmpeg fed by the saved project JSON and uploaded media.</li></ol>
-<div class="row" style="margin-top:14px"><button class="btn pri" data-act="fake">Render MP4</button><button class="btn" data-act="json">Download project file (.json)</button><button class="btn" data-act="close">Close</button></div>`)},
-fake(){toast("Not available yet: video rendering still has to be built (see the list above).","err")},
+export(){const n=cur.slots.filter((s,i)=>M[cur.id+":"+i]).length;modal(`<h2>Export Video</h2><div class="set" style="margin-top:12px"><div class="chip"><small>Resolution</small>720 × 1280</div><div class="chip"><small>Format</small>Browser-supported video</div><div class="chip"><small>Frame rate</small>30 FPS</div><div class="chip"><small>Duration</small>15 seconds</div></div>
+<div class="note">This browser renderer creates a real downloadable video from your five ranking scenes. MP4 is used only if your browser supports it; otherwise it exports WebM. ${n}/5 slots have uploaded media.</div><p id="renderStatus" style="color:var(--mut);font-size:13px">Keep this tab open while rendering. Large clips may take time on mobile.</p>
+<div class="row" style="margin-top:14px"><button class="btn pri" data-act="render">Render & Download Video</button><button class="btn" data-act="json">Download project (.json)</button><button class="btn" data-act="close">Close</button></div>`)},
+render(){renderVideo()},
 json(){const b=new Blob([JSON.stringify(cur,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=cur.name.replace(/\W+/g,"-")+".json";a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}};
 document.addEventListener("click",e=>{const b=e.target.closest("[data-act]");if(b)A[b.dataset.act]?.(b.dataset.id,b)});
 document.addEventListener("input",e=>{const f=e.target.dataset.f;if(!f||!cur)return;const v=e.target.value,[k,i]=f.split(":");
